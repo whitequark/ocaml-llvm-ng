@@ -72,7 +72,7 @@ garbage collector. The glue code resides in five functions,
 `caml_call_gc`.
 
 All of the `caml_alloc*` functions are very similar (see the
-[implementation][camlalloc]. First, they check whether there is enough
+[implementation][camlalloc]). First, they check whether there is enough
 space in the young generation for the object they need to allocate.
 This is a simple bump-pointer allocator, and as such, the check is
 a single integer comparison. Second, if the young generation space is
@@ -130,6 +130,9 @@ i386
 ----
 
 No pinned registers.
+
+Some odd mechanism for passing very long argument lists via `caml_extra_params`
+exists.
 
 POWER
 -----
