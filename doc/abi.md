@@ -63,6 +63,15 @@ access these registers in a portable way. As such, it is necessary to
 write-back the values in registers back to the C-accessible global
 variables they're pinned to.
 
+Tail call elimination
+---------------------
+
+A fascinating tidbit is that OCaml is unable to make a call tail call
+if the call requires passing some parameters on the stack (the callee
+wouldn't know how much to pop from the stack). As such, every architecture
+has a specific limit on how much arguments one can pass while retaining
+TCO. Presently calls with at least 8 arguments are always TCO'd.
+
 Garbage collector
 -----------------
 
@@ -112,6 +121,8 @@ r14
 r15
 : caml_young_ptr
 
+Maximum number of arguments for TCO: 10.
+
 ARM
 ---
 
@@ -126,13 +137,15 @@ r10
 r11
 : caml_young_limit
 
+Maximum number of arguments for TCO: 8.
+
 i386
 ----
 
 No pinned registers.
 
-Some odd mechanism for passing very long argument lists via `caml_extra_params`
-exists.
+Maximum number of arguments for TCO: 22. (6 of them are passed in registers.
+The rest are stuffed into a `caml_extra_params` global.)
 
 POWER
 -----
@@ -148,6 +161,8 @@ r30
 r31
 : caml_young_ptr
 
+Maximum number of arguments for TCO: 8.
+
 SPARC
 -----
 
@@ -161,3 +176,5 @@ Pinned registers:
 
 %l7
 : caml_young_ptr
+
+Maximum number of arguments for TCO: 10.
