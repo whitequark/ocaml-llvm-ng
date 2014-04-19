@@ -1,1 +1,1 @@
-<*.{ml,mli}> or <run_test.*>: package(compiler-libs.optcomp)
+<*.{ml,mli}> or <run_cmm.*>: package(compiler-libs.optcomp), package(llvm), package(llvm.target), package(llvm_X86)

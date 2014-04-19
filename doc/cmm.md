@@ -1,13 +1,20 @@
 Cmm layer
 =========
 
-Cmm (like C--) layer is OCaml's latest machine-independent intermediate
+Cmm (like C--) layer is OCaml's last machine-independent intermediate
 representation. In many respects it looks like an SSA IR, e.g. LLVM IR;
 indeed, the translation is almost 1:1, save for oddity of some Cmm
 constructs.
 
-Tuples
-------
+Aggregates
+----------
+
+Cmm has a `type machtype = machtype_component list`, but it appears
+that the only values of this type are `[||]`, i.e. `unit`,
+and `[|Int|]`, `[|Float|]`, `[|Addr|]`.
+
+Tuple
+-----
 
 Cmm has a `Ctuple elems` constructor. The name is a bit deceptive. In
 reality, Cmmgen only ever generates values of form `Ctuple []`, which
@@ -18,6 +25,19 @@ Cmm IR. Instead, they're used as constructor arguments for some Mach
 constructors; it appears that they're used for grouping arguments
 for the intermediate representation corresponding to LEA-like
 instructions on i386 and power.
+
+If/then/else
+------------
+
+Cmm has a `Cifthenelse` operation. It receives an integer which is either
+`0` or `1`.
+
+Load/store
+----------
+
+`Cop (Cload _)` and `Cop (Cstore _)` imply that a loaded/stored value
+is extended/truncated to fit one of the three basic data types,
+`Int`, `Float` and `Addr`.
 
 Exit/catch
 ----------
@@ -61,8 +81,8 @@ catch:
 }
 ```
 
-Binding constructs
-------------------
+Let/var/assign
+--------------
 
 Cmm has three binding constructs: `Clet`, `Cvar` and `Cassign`. It is
 wrong to think of them as if they create mutable bindings. Rather, these

@@ -1,5 +1,9 @@
 open Ocamlbuild_plugin
 
+let () = (* :( *)
+  Unix.putenv "OCAMLPATH" ("/home/whitequark/.opam/4.01.0/lib/llvm/" ^
+                           (try ":" ^ (Unix.getenv "OCAMLPATH") with Not_found -> ""))
+
 let () =
   dispatch begin
     function
