@@ -10,6 +10,7 @@ let () =
     try
       let phrase = parse () in
       Printcmm.phrase Format.err_formatter phrase;
+      Format.pp_print_newline Format.err_formatter ();
       translate ((Llvmcomp.phrase llmod phrase) :: rest)
     with End_of_file ->
       rest

@@ -59,6 +59,7 @@ let access_array base numelt size =
 %token CATCH
 %token CHECKBOUND
 %token COLON
+%token DATA
 %token DIVF
 %token DIVI
 %token EOF
@@ -67,15 +68,18 @@ let access_array base numelt size =
 %token EQI
 %token EXIT
 %token EXTCALL
+%token DOUBLE
 %token FLOAT
 %token FLOAT32
 %token FLOAT64
+%token FLOAT64U
 %token <string> FLOATCONST
 %token FLOATOFINT
 %token FUNCTION
 %token GEA
 %token GEF
 %token GEI
+%token GLOBAL
 %token GTA
 %token GTF
 %token GTI
@@ -145,7 +149,7 @@ phrase:
   | EOF         { raise End_of_file }
 ;
 fundecl:
-    LPAREN FUNCTION STRING LPAREN params RPAREN sequence RPAREN
+    LPAREN FUNCTION IDENT LPAREN params RPAREN sequence RPAREN
       { List.iter (fun (id, ty) -> unbind_ident id) $5;
         {fun_name = $3; fun_args = $5; fun_body = $7; fun_fast = true;
          fun_dbg = Debuginfo.none} }
@@ -212,6 +216,8 @@ expr:
       { Cop(Cstore Word, [access_array $3 $4 Arch.size_int; $5]) }
   | LPAREN FLOATASET expr expr expr RPAREN
       { Cop(Cstore Double_u, [access_array $3 $4 Arch.size_float; $5]) }
+  | LPAREN ALLOC INTCONST exprlist RPAREN
+      { Cop(Calloc, Cconst_int $3 :: $4) }
 ;
 exprlist:
     exprlist expr               { $2 :: $1 }
@@ -239,7 +245,8 @@ chunk:
   | ADDR                        { Word }
   | FLOAT32                     { Single }
   | FLOAT64                     { Double }
-  | FLOAT                       { Double_u }
+  | FLOAT64U                    { Double_u }
+  | /**/                        { Word }
 
 ;
 unaryop:
@@ -304,7 +311,7 @@ bind_ident:
     IDENT                       { bind_ident $1 }
 ;
 datadecl:
-    LPAREN datalist RPAREN      { List.rev $2 }
+    LPAREN DATA datalist RPAREN      { List.rev $3 }
 ;
 datalist:
     datalist dataitem           { $2 :: $1 }
@@ -313,10 +320,11 @@ datalist:
 dataitem:
     STRING COLON                { Cdefine_symbol $1 }
   | INTCONST COLON              { Cdefine_label $1 }
+  | GLOBAL STRING               { Cglobal_symbol $2 }
   | BYTE INTCONST               { Cint8 $2 }
   | HALF INTCONST               { Cint16 $2 }
   | INT INTCONST                { Cint(Nativeint.of_int $2) }
-  | FLOAT FLOATCONST            { Cdouble $2 }
+  | DOUBLE FLOATCONST           { Cdouble $2 }
   | ADDR STRING                 { Csymbol_address $2 }
   | ADDR INTCONST               { Clabel_address $2 }
   | KSTRING STRING              { Cstring $2 }

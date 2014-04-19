@@ -1,6 +1,6 @@
 (function caml_program ()
  (app "camlIntegr__entry" unit)
- (store "caml_globals_inited" (+ (load "caml_globals_inited") 1)) 1)
+ (**(store "caml_globals_inited" (+ (load "caml_globals_inited") 1))*) 1)
 
 (function caml_curry4 (arg/1069: addr clos/1070: addr)
  (alloc 5367 "caml_curry4_1" 7 "caml_curry4_1_app" arg/1069 clos/1070))

@@ -14,10 +14,18 @@ open Cmm
 
 let llctx = Llvm.global_context ()
 
-let ()        = Llvm_X86.initialize ()
-let lltarget  = Llvm_target.Target.by_triple "x86_64-linux-gnu"
-let llmachine = Llvm_target.TargetMachine.create "x86_64-linux-gnu" lltarget
-let lldly     = Llvm_target.TargetMachine.data_layout llmachine
+let ()         = Llvm_X86.initialize ()
+let lltarget   = Llvm_target.Target.by_triple "x86_64-linux-gnu"
+let llmachine  = Llvm_target.TargetMachine.create "x86_64-linux-gnu" lltarget
+let lldly      = Llvm_target.TargetMachine.data_layout llmachine
+
+(* names of pinned registers. need to correspond to ocamlcc in llvm *)
+let llpinned   =
+  match Llvm_target.Target.name lltarget with
+  | "x86-64" -> ["caml_exception_pointer"; "caml_young_ptr"]
+  | _ -> assert false
+let llpinnedty = List.map  (fun _   -> Llvm.pointer_type (Llvm.i8_type llctx)) llpinned
+let llpinidx   = List.mapi (fun i _ -> i) llpinned
 
 let llicmp_of_comparison pred =
   match pred with
@@ -56,7 +64,7 @@ let load_store_params memory_chunk =
   | Byte_unsigned | Byte_signed -> align (integer 1)
   | Sixteen_unsigned | Sixteen_signed -> align (integer 2)
   | Thirtytwo_unsigned | Thirtytwo_signed -> align (integer 4)
-  | Word -> align (integer intptr_size)
+  | Word -> align (Llvm.pointer_type (integer intptr_size))
   | Single -> align (Llvm.float_type llctx)
   | Double -> align (Llvm.double_type llctx)
   | Double_u -> Llvm.double_type llctx, intptr_size
@@ -178,28 +186,35 @@ let rec compile llmod llfun fun_args fun_body =
     | incoming'  -> Llvm.build_phi incoming' name llbuilder
   in
   (* create cells for arguments *)
-  let env       = Hashtbl.create 16 in
+  let env       = ((Hashtbl.create 16) : (string, Llvm.llvalue) Hashtbl.t) in
   let catches   = Hashtbl.create 16 in
   let llbuilder = Llvm.builder llctx in
   Llvm.position_at_end (Llvm.append_block llctx "entry" llfun) llbuilder;
-  List.iter2 (fun id llarg ->
-      let name = Ident.name id in
-      Llvm.set_value_name ("arg." ^ name) llarg;
+  List.iter2 (fun name llarg ->
+      if List.exists ((=) name) llpinned then
+        Llvm.set_value_name ("pinned." ^ name) llarg
+      else
+        Llvm.set_value_name ("arg." ^ name) llarg;
       let llalloca = Llvm.build_alloca (Llvm.type_of llarg) ("alloca." ^ name) llbuilder in
       ignore (Llvm.build_store llarg llalloca llbuilder);
-      Hashtbl.add env id llalloca)
-    (List.map fst fun_args)
+      Hashtbl.add env name llalloca)
+    (llpinned @ (List.map (fun (id, _) -> Ident.name id) fun_args))
     (Array.to_list (Llvm.params llfun));
   (* translate body *)
   let rec llvalue_of_expr expr =
-    let unop f name args =
+    let unop mcomp f name args =
       match args with
-      | [arg] -> f (llvalue_of_expr arg) name llbuilder
+      | [arg] ->
+        let arg' = Llvm.build_pointercast (llvalue_of_expr arg) (lltype_of_mcomp mcomp) "" llbuilder in
+        f arg' name llbuilder
       | _ -> assert false
     in
-    let binop f name args =
+    let binop mcomp f name args =
       match args with
-      | [lhs; rhs] -> f (llvalue_of_expr lhs) (llvalue_of_expr rhs) name llbuilder
+      | [lhs; rhs] ->
+        let lhs' = Llvm.build_pointercast (llvalue_of_expr lhs) (lltype_of_mcomp mcomp) "" llbuilder in
+        let rhs' = Llvm.build_pointercast (llvalue_of_expr rhs) (lltype_of_mcomp mcomp) "" llbuilder in
+        f lhs' rhs' name llbuilder
       | _ -> assert false
     in
     match expr with
@@ -224,7 +239,7 @@ let rec compile llmod llfun fun_args fun_body =
         | None   ->
           begin match Llvm.lookup_function sym llmod with
           | Some f -> f
-          | None   -> Llvm.declare_global (Llvm.i8_type llctx) sym llmod
+          | None   -> Llvm.declare_global (lltype_of_mcomp Addr) sym llmod
           end
         end
       in
@@ -233,30 +248,30 @@ let rec compile llmod llfun fun_args fun_body =
       Llvm.const_int (lltype_of_mcomp Int) 1
     | Ctuple _ -> assert false
     (* Integer ops *)
-    | Cop (Caddi, args) -> binop Llvm.build_add  "addi" args
-    | Cop (Csubi, args) -> binop Llvm.build_sub  "subi" args
-    | Cop (Cmuli, args) -> binop Llvm.build_mul  "muli" args
-    | Cop (Cdivi, args) -> binop Llvm.build_sdiv "divi" args
-    | Cop (Cmodi, args) -> binop Llvm.build_srem "modi" args
-    | Cop (Ccmpi pred, args) -> binop (Llvm.build_icmp (llicmp_of_comparison pred)) "cmpi" args
+    | Cop (Caddi, args) -> binop Int Llvm.build_add  "addi" args
+    | Cop (Csubi, args) -> binop Int Llvm.build_sub  "subi" args
+    | Cop (Cmuli, args) -> binop Int Llvm.build_mul  "muli" args
+    | Cop (Cdivi, args) -> binop Int Llvm.build_sdiv "divi" args
+    | Cop (Cmodi, args) -> binop Int Llvm.build_srem "modi" args
+    | Cop (Ccmpi pred, args) -> binop Int (Llvm.build_icmp (llicmp_of_comparison pred)) "cmpi" args
     (* Logical ops *)
-    | Cop (Cand,  args) -> binop Llvm.build_and  "and" args
-    | Cop (Cor,   args) -> binop Llvm.build_or   "or"  args
-    | Cop (Cxor,  args) -> binop Llvm.build_xor  "xor" args
-    | Cop (Clsl,  args) -> binop Llvm.build_shl  "lsl" args
-    | Cop (Clsr,  args) -> binop Llvm.build_lshr "lsr" args
-    | Cop (Casr,  args) -> binop Llvm.build_ashr "asr" args
+    | Cop (Cand,  args) -> binop Int Llvm.build_and  "and" args
+    | Cop (Cor,   args) -> binop Int Llvm.build_or   "or"  args
+    | Cop (Cxor,  args) -> binop Int Llvm.build_xor  "xor" args
+    | Cop (Clsl,  args) -> binop Int Llvm.build_shl  "lsl" args
+    | Cop (Clsr,  args) -> binop Int Llvm.build_lshr "lsr" args
+    | Cop (Casr,  args) -> binop Int Llvm.build_ashr "asr" args
     (* Floating-point ops *)
-    | Cop (Caddf, args) -> binop Llvm.build_fadd "addf" args
-    | Cop (Csubf, args) -> binop Llvm.build_fsub "subf" args
-    | Cop (Cmulf, args) -> binop Llvm.build_fmul "mulf" args
-    | Cop (Cdivf, args) -> binop Llvm.build_fdiv "divf" args
-    | Cop (Cnegf, args) -> unop  Llvm.build_fneg "negf" args
+    | Cop (Caddf, args) -> binop Float Llvm.build_fadd "addf" args
+    | Cop (Csubf, args) -> binop Float Llvm.build_fsub "subf" args
+    | Cop (Cmulf, args) -> binop Float Llvm.build_fmul "mulf" args
+    | Cop (Cdivf, args) -> binop Float Llvm.build_fdiv "divf" args
+    | Cop (Cnegf, args) -> unop  Float Llvm.build_fneg "negf" args
+    | Cop (Ccmpf pred, args) -> binop Float (Llvm.build_fcmp (llfcmp_of_comparison pred)) "cmpf" args
     | Cop (Cabsf, [arg]) ->
       let llfabsty = Llvm.function_type (Llvm.double_type llctx) [|Llvm.double_type llctx|] in
       let llfabs   = Llvm.declare_function "llvm.fabs.f64" llfabsty llmod in
       Llvm.build_call llfabs [|llvalue_of_expr arg|] "absf" llbuilder
-    | Cop (Ccmpf pred, args) -> binop (Llvm.build_fcmp (llfcmp_of_comparison pred)) "cmpf" args
     | Cop (Cfloatofint, [arg]) ->
       Llvm.build_sitofp (llvalue_of_expr arg) (lltype_of_mcomp Float) "floatofint" llbuilder
     | Cop (Cintoffloat, [arg]) ->
@@ -264,14 +279,14 @@ let rec compile llmod llfun fun_args fun_body =
     | Cop ((Cintoffloat | Cfloatofint | Cabsf), _) -> assert false
     (* Pointer ops *)
     | Cop ((Cadda | Csuba) as op, [base; disp]) ->
-      let op, name =
+      let llvalue = llvalue_of_expr base in
+      let lldisp, name =
         match op with
-        | Cadda -> Llvm.build_add, "adda"
-        | Csuba -> Llvm.build_sub, "suba"
+        | Cadda -> llvalue_of_expr disp,                               "adda"
+        | Csuba -> Llvm.build_neg (llvalue_of_expr disp) "" llbuilder, "suba"
         | _ -> assert false
       in
-      op (Llvm.build_ptrtoint (llvalue_of_expr base) (lltype_of_mcomp Int) "" llbuilder)
-         (llvalue_of_expr disp) name llbuilder
+      Llvm.build_gep llvalue [|lldisp|] name llbuilder
     | Cop (Ccmpa pred, [lhs; rhs]) ->
       let lhs' = Llvm.build_ptrtoint (llvalue_of_expr lhs) (lltype_of_mcomp Int)
                                      "cmpa.lhs" llbuilder in
@@ -282,8 +297,9 @@ let rec compile llmod llfun fun_args fun_body =
     (* Load/store *)
     | Cop (Cload ty, [addr]) ->
       let llty, align = load_store_params ty in
-      let lladdr   = Llvm.build_pointercast (llvalue_of_expr addr) llty "load.addr" llbuilder in
-      let llvalue  = Llvm.build_load lladdr "load" llbuilder in
+      let lladdr   = llvalue_of_expr addr in
+      let lladdr'  = Llvm.build_bitcast lladdr (Llvm.pointer_type llty) "load.addr" llbuilder in
+      let llvalue  = Llvm.build_load lladdr' "load" llbuilder in
       begin match ty with
       | Word                       -> llvalue
       | Single | Double | Double_u -> Llvm.build_fpext llvalue (lltype_of_mcomp Float) "" llbuilder
@@ -294,28 +310,32 @@ let rec compile llmod llfun fun_args fun_body =
       let llvalue  = llvalue_of_expr value in
       let llvalue' =
         match ty with
-        | Word                       -> llvalue
+        | Word                       -> Llvm.build_bitcast llvalue llty "" llbuilder
         | Single | Double | Double_u -> Llvm.build_fptrunc llvalue llty "" llbuilder
         | _                          -> Llvm.build_trunc llvalue llty "" llbuilder
       in
-      let lladdr   = Llvm.build_pointercast (llvalue_of_expr addr) llty "store.addr" llbuilder in
-      Llvm.build_store lladdr llvalue' llbuilder
+      let lladdr  = llvalue_of_expr addr in
+      let lladdr' = Llvm.build_bitcast lladdr (Llvm.pointer_type llty) "store.addr" llbuilder in
+      Llvm.build_store llvalue' lladdr' llbuilder
     | Cop ((Cload _ | Cstore _), _) -> assert false
     (* Bindings *)
     | Cvar id ->
-      Llvm.build_load (Hashtbl.find env id) ("local." ^ (Ident.name id)) llbuilder
+      let name = Ident.name id in
+      Llvm.build_load (Hashtbl.find env name) ("local." ^ name) llbuilder
     | Clet (id, expr, body) ->
+      let name     = Ident.name id in
       let llvalue  = llvalue_of_expr expr in
       let llalloca = Llvm.build_alloca (Llvm.type_of llvalue)
-                                       ("alloca." ^ (Ident.name id)) llbuilder in
+                                       ("alloca." ^ name) llbuilder in
       ignore (Llvm.build_store llvalue llalloca llbuilder);
-      Hashtbl.add env id llalloca;
+      Hashtbl.add env name llalloca;
       let result = llvalue_of_expr body in
-      Hashtbl.remove env id;
+      Hashtbl.remove env name;
       result
     | Cassign (id, expr) ->
+      let name   = Ident.name id in
       let llexpr = llvalue_of_expr expr in
-      Llvm.build_store llexpr (Hashtbl.find env id) llbuilder
+      Llvm.build_store llexpr (Hashtbl.find env name) llbuilder
     (* Control flow *)
     | Csequence (lhs, rhs) ->
       ignore (llvalue_of_expr lhs);
@@ -364,7 +384,7 @@ let rec compile llmod llfun fun_args fun_body =
         List.mapi (fun phiid var ->
             let llphi = Llvm.build_phi [] (Printf.sprintf "catch.%d.value.%d" id phiid)
                                        llbuilder in
-            Hashtbl.add env var llphi;
+            Hashtbl.add env (Ident.name var) llphi;
             llphi)
           vars
       in
@@ -413,39 +433,81 @@ let rec compile llmod llfun fun_args fun_body =
       assert false
     (* Function calls *)
     | Cop (Capply (retty, dbg), fn :: args) ->
-      let llargs  = Array.of_list (List.map llvalue_of_expr args) in
-      let llretty = lltype_of_mty retty in
-      let llfunty = Llvm.function_type llretty (Array.map Llvm.type_of llargs) in
-      let llfun   = Llvm.build_bitcast (llvalue_of_expr fn) (Llvm.pointer_type llfunty)
-                                       "apply.fn" llbuilder in
-      let llcall  = Llvm.build_call llfun llargs "apply" llbuilder in
-      Llvm.set_instruction_call_conv Llvm.CallConv.fast llcall;
-      llcall
+      let llargs   = List.map llvalue_of_expr args in
+      let llretty  = Llvm.struct_type llctx (Array.of_list (llpinnedty @ [lltype_of_mty retty])) in
+      let llargsty = llpinnedty @ (List.map Llvm.type_of llargs) in
+      let llfunty  = Llvm.function_type llretty (Array.of_list llargsty) in
+      let llfun    = Llvm.build_bitcast (llvalue_of_expr fn) (Llvm.pointer_type llfunty)
+                                        "apply.fn" llbuilder in
+      let llargs'  = (List.map (fun name ->
+                          Llvm.build_load (Hashtbl.find env name) ("pass."^name) llbuilder)
+                        llpinned) @ llargs in
+      let llcall   = Llvm.build_call llfun (Array.of_list llargs') "" llbuilder in
+      Llvm.set_instruction_call_conv (*ocamlcc*)16 llcall;
+      Llvm.set_tail_call true llcall;
+      List.iteri (fun idx name ->
+          let llvalue = Llvm.build_extractvalue llcall idx ("reload."^name) llbuilder in
+          ignore (Llvm.build_store llvalue (Hashtbl.find env name) llbuilder))
+        llpinned;
+      Llvm.build_extractvalue llcall (List.length llpinned) "apply" llbuilder
     | Cop (Cextcall (prim, ty, does_alloc, dbg), args) ->
       assert false
     | Cop (Capply _, _) -> assert false
     (* Allocation *)
     | Cop (Calloc, args) ->
-      assert false
+      let llallocfn =
+        match Llvm.lookup_function "caml_allocN" llmod with
+        | Some fn -> fn
+        | None ->
+          let llallocfnty = Llvm.function_type (lltype_of_mcomp Addr) [|lltype_of_mcomp Int|] in
+          let llallocfn   = Llvm.declare_function "caml_allocN" llallocfnty llmod in
+          Llvm.set_function_call_conv (*preserve_allcc*)15 llallocfn;
+          llallocfn
+      in
+      let llargs    = List.map llvalue_of_expr args in
+      let llallocty = Llvm.packed_struct_type llctx (Array.of_list
+                                                     (List.map Llvm.type_of llargs)) in
+      let llsize    = Llvm_target.DataLayout.store_size llallocty lldly in
+      let llsize'   = Llvm.const_of_int64 (lltype_of_mcomp Int) llsize true in
+      let llalloc   = Llvm.build_call llallocfn [|llsize'|] "alloc" llbuilder in
+      let llalloc'  = Llvm.build_bitcast llalloc (Llvm.pointer_type llallocty) "" llbuilder in
+      List.iter2 (fun expr (idx, llvalue) ->
+          let llfield  = Llvm.build_struct_gep llalloc' idx
+                                               (Printf.sprintf "field.%d" idx) llbuilder in
+          ignore (Llvm.build_store llvalue llfield llbuilder))
+        args (List.mapi (fun idx llvalue -> idx, llvalue) llargs);
+      let llbody    = Llvm.build_struct_gep llalloc' 1 "" llbuilder in
+      Llvm.build_bitcast llbody (lltype_of_mcomp Addr) "alloc.body" llbuilder
     (* Misc *)
     | Cop (Ccheckbound dbg, args) ->
       assert false
   in
-  ignore (Llvm.build_ret (llvalue_of_expr fun_body) llbuilder)
+  let llresult = llvalue_of_expr fun_body in
+  let llreturn =
+    List.fold_left2 (fun llpack name idx ->
+        let llreg = Llvm.build_load (Hashtbl.find env name) ("reload." ^ name) llbuilder in
+        Llvm.build_insertvalue llpack llreg idx "" llbuilder)
+      (Llvm.undef (Llvm.struct_type llctx (Array.of_list (llpinnedty @ [Llvm.type_of llresult]))))
+      llpinned llpinidx
+  in
+  let llreturn = Llvm.build_insertvalue llreturn llresult (List.length llpinned) "" llbuilder in
+  ignore (Llvm.build_ret llreturn llbuilder)
 
 let fundecl llmod {fun_name; fun_args; fun_body} =
-  let llargsty  = Array.of_list (List.map (fun (id, ty) -> lltype_of_mty ty) fun_args) in
-  let llretty   = infer fun_args fun_body in
-  let llfunty   = Llvm.function_type llretty llargsty in
+  let llargsty  = List.map (fun (id, ty) -> lltype_of_mty ty) fun_args in
+  let llargsty' = Array.of_list (llpinnedty @ llargsty) in
+  let llretty   = Llvm.struct_type llctx (Array.of_list (llpinnedty @ [infer fun_args fun_body])) in
+  let llfunty   = Llvm.function_type llretty llargsty' in
   let llfun     = Llvm.declare_function fun_name llfunty llmod in
-  Llvm.set_function_call_conv Llvm.CallConv.fast llfun;
+  Llvm.set_linkage Llvm.Linkage.Internal llfun;
+  Llvm.set_function_call_conv (*ocamlcc*)16 llfun;
   Llvm.set_gc (Some "ocaml") llfun;
   fun () ->
     compile llmod llfun fun_args fun_body;
     llfun
 
 let data llmod decl =
-  assert false
+  fun () -> Llvm.undef (Llvm.i8_type llctx)
 
 let transl_unit name =
   let llmod = Llvm.create_module llctx name in

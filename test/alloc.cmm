@@ -1,0 +1,3 @@
+(function camlMlintegr__square_1010 (x/1011: addr)
+ (alloc 1277 (*f (load float64u x/1011) (load float64u x/1011))))
+

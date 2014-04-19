@@ -1,19 +1,19 @@
 (***********************************************************************)
-(*                                                                     *)
-(*                                OCaml                                *)
-(*                                                                     *)
-(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
-(*                                                                     *)
-(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
-(*  en Automatique.  All rights reserved.  This file is distributed    *)
-(*  under the terms of the Q Public License version 1.0.               *)
-(*                                                                     *)
+(**                                                                    *)
+(**                               OCaml                                *)
+(**                                                                    *)
+(**           Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
+(**                                                                    *)
+(** Copyright 1996 Institut National de Recherche en Informatique et   *)
+(** en Automatique.  All rights reserved.  This file is distributed    *)
+(** under the terms of the Q Public License version 1.0.               *)
+(**                                                                    *)
 (***********************************************************************)
 
-(function "square" (x: float)
+(function square (x: float)
    ( *f x x))
 
-(function "integr" (f: addr low: float high: float n: int)
+(function integr (f: addr low: float high: float n: int)
   (let (h (/f (-f high low) (floatofint n))
         x low
         s 0.0
@@ -24,5 +24,5 @@
       (assign i (- i 1)))
     ( *f s h)))
 
-(function "test" (n: int)
+(function test (n: int)
   (app "integr" "square" 0.0 1.0 n float))

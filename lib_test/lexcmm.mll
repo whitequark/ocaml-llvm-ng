@@ -39,13 +39,17 @@ let keyword_table =
     "case", CASE;
     "catch", CATCH;
     "checkbound", CHECKBOUND;
+    "data", DATA;
+    "double", DOUBLE;
     "exit", EXIT;
     "extcall", EXTCALL;
     "float", FLOAT;
     "float32", FLOAT32;
     "float64", FLOAT64;
+    "float64u", FLOAT64U;
     "floatofint", FLOATOFINT;
     "function", FUNCTION;
+    "global", GLOBAL;
     "half", HALF;
     "if", IF;
     "int", INT;
@@ -181,7 +185,7 @@ rule token = parse
       { FLOATCONST(Lexing.lexeme lexbuf) }
   | ['A'-'Z' 'a'-'z' '\223'-'\246' '\248'-'\255' ]
     (['A'-'Z' 'a'-'z' '_' '\192'-'\214' '\216'-'\246' '\248'-'\255'
-      '\'' '0'-'9' ]) *
+      '\'' '0'-'9' '/' ]) *
       { let s = Lexing.lexeme lexbuf in
         try
           Hashtbl.find keyword_table s
@@ -191,14 +195,14 @@ rule token = parse
       { reset_string_buffer();
         string lexbuf;
         STRING (get_stored_string()) }
-  | "(*"
+  | "(**"
       { comment_depth := 1;
         comment lexbuf;
         token lexbuf }
   | _ { raise(Error(Illegal_character)) }
 
 and comment = parse
-    "(*"
+    "(**"
       { comment_depth := succ !comment_depth; comment lexbuf }
   | "*)"
       { comment_depth := pred !comment_depth;
