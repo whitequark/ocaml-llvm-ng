@@ -1,0 +1,55 @@
+(data int 3072 global "camlMlintegr" "camlMlintegr": skip 24)
+(data int 2295 "camlMlintegr__4": addr "camlMlintegr__test_1022" int 3)
+(data
+ int 3319
+ "camlMlintegr__5":
+ addr "caml_curry4"
+ int 9
+ addr "camlMlintegr__integr_1012")
+(data int 2295 "camlMlintegr__6": addr "camlMlintegr__square_1010" int 3)
+(data global "camlMlintegr__1" int 1277 "camlMlintegr__1": double 0.0)
+(data global "camlMlintegr__2" int 1277 "camlMlintegr__2": double 0.0)
+(data global "camlMlintegr__3" int 1277 "camlMlintegr__3": double 1.0)
+(function camlMlintegr__iter_1018
+     (x/1019: addr s/1020: addr i/1021: addr env/1038: addr)
+ (if (> i/1021 1)
+   (app "camlMlintegr__iter_1018"
+     (alloc 1277
+       (+f (load float64u s/1020)
+         (let fun/1042 (load (+a env/1038 24))
+           (load float64u (app (load fun/1042) x/1019 fun/1042 addr)))))
+     (alloc 1277
+       (+f (load float64u x/1019) (load float64u (load (+a env/1038 32)))))
+     (+ i/1021 -2) env/1038 addr)
+   (alloc 1277
+     (*f (load float64u s/1020) (load float64u (load (+a env/1038 32)))))))
+
+(function camlMlintegr__square_1010 (x/1011: addr)
+ (alloc 1277 (*f (load float64u x/1011) (load float64u x/1011))))
+
+(function camlMlintegr__integr_1012
+     (f/1013: addr low/1014: addr high/1015: addr n/1016: addr)
+ (let
+   (h/1041
+      (/f (-f (load float64u high/1015) (load float64u low/1014))
+        (floatofint (>>s n/1016 1)))
+    h/1017 (alloc 1277 h/1041)
+    clos/1039
+      (alloc 5367 "caml_curry3" 7 "camlMlintegr__iter_1018" f/1013 h/1017))
+   (app "camlMlintegr__iter_1018" low/1014 "camlMlintegr__1" n/1016 clos/1039
+     addr)))
+
+(function camlMlintegr__test_1022 (n/1023: addr)
+ (app "camlMlintegr__integr_1012" (load "camlMlintegr") "camlMlintegr__2"
+   "camlMlintegr__3" n/1023 addr))
+
+(function camlMlintegr__entry ()
+ (let square/1010 "camlMlintegr__6" (store "camlMlintegr" square/1010))
+ (let integr/1012 "camlMlintegr__5"
+   (store (+a "camlMlintegr" 8) integr/1012))
+ (let test/1022 "camlMlintegr__4" (store (+a "camlMlintegr" 16) test/1022))
+ (app "camlMlintegr__integr_1012" (load "camlMlintegr") "camlMlintegr__2"
+   "camlMlintegr__3" 21 unit)
+ 1a)
+
+(data)
