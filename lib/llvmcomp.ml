@@ -286,7 +286,7 @@ let rec compile llmod llfun fun_args fun_body =
         | Csuba -> Llvm.build_neg (llvalue_of_expr disp) "" llbuilder, "suba"
         | _ -> assert false
       in
-      Llvm.build_gep llvalue [|lldisp|] name llbuilder
+      Llvm.build_in_bounds_gep llvalue [|lldisp|] name llbuilder
     | Cop (Ccmpa pred, [lhs; rhs]) ->
       let lhs' = Llvm.build_ptrtoint (llvalue_of_expr lhs) (lltype_of_mcomp Int)
                                      "cmpa.lhs" llbuilder in
@@ -426,11 +426,6 @@ let rec compile llmod llfun fun_args fun_body =
           Llvm.add_incoming (llvalue, lldest') llexitret)
         (Array.to_list cases) (Array.to_list dests);
       llexitret
-    (* Exception handling *)
-    | Ctrywith (_, _, _) ->
-      assert false
-    | Cop (Craise dbg, args) ->
-      assert false
     (* Function calls *)
     | Cop (Capply (retty, dbg), fn :: args) ->
       let llargs   = List.map llvalue_of_expr args in
@@ -465,8 +460,8 @@ let rec compile llmod llfun fun_args fun_body =
           llallocfn
       in
       let llargs    = List.map llvalue_of_expr args in
-      let llallocty = Llvm.packed_struct_type llctx (Array.of_list
-                                                     (List.map Llvm.type_of llargs)) in
+      let llallocty = Llvm.struct_type llctx (Array.of_list
+                                              (List.map Llvm.type_of llargs)) in
       let llsize    = Llvm_target.DataLayout.store_size llallocty lldly in
       let llsize'   = Llvm.const_of_int64 (lltype_of_mcomp Int) llsize true in
       let llalloc   = Llvm.build_call llallocfn [|llsize'|] "alloc" llbuilder in
@@ -478,7 +473,11 @@ let rec compile llmod llfun fun_args fun_body =
         args (List.mapi (fun idx llvalue -> idx, llvalue) llargs);
       let llbody    = Llvm.build_struct_gep llalloc' 1 "" llbuilder in
       Llvm.build_bitcast llbody (lltype_of_mcomp Addr) "alloc.body" llbuilder
-    (* Misc *)
+    (* Exception handling *)
+    | Ctrywith (_, _, _) ->
+      assert false
+    | Cop (Craise dbg, args) ->
+      assert false
     | Cop (Ccheckbound dbg, args) ->
       assert false
   in
@@ -499,15 +498,116 @@ let fundecl llmod {fun_name; fun_args; fun_body} =
   let llretty   = Llvm.struct_type llctx (Array.of_list (llpinnedty @ [infer fun_args fun_body])) in
   let llfunty   = Llvm.function_type llretty llargsty' in
   let llfun     = Llvm.declare_function fun_name llfunty llmod in
-  Llvm.set_linkage Llvm.Linkage.Internal llfun;
   Llvm.set_function_call_conv (*ocamlcc*)16 llfun;
   Llvm.set_gc (Some "ocaml") llfun;
   fun () ->
     compile llmod llfun fun_args fun_body;
     llfun
 
+let lltype_of_data_item item =
+  match item with
+  | Cdefine_label _ | Cdefine_symbol _ | Cglobal_symbol _ | Calign _ ->
+    assert false
+  | Cint8  _  -> Llvm.i8_type  llctx
+  | Cint16 _  -> Llvm.i16_type llctx
+  | Cint32 _  -> Llvm.i32_type llctx
+  | Cint   _  -> lltype_of_mcomp Int
+  | Csingle _ -> Llvm.float_type llctx
+  | Cdouble _ -> Llvm.double_type llctx
+  | Csymbol_address _ | Clabel_address _ ->
+    lltype_of_mcomp Addr
+  | Cstring s -> Llvm.array_type (Llvm.i8_type llctx) (String.length s)
+  | Cskip len -> Llvm.array_type (Llvm.i8_type llctx) len
+
+let lltype_of_data items =
+  let len, items =
+    List.fold_left (fun (len, lltys) item ->
+        match item with
+        | Cdefine_label _ | Cdefine_symbol _ | Cglobal_symbol _ ->
+          len, lltys
+        | Calign size ->
+          if len mod size = 0 then len, lltys
+          else let skip_len = size - len mod size in
+               len + skip_len, lltype_of_data_item (Cskip skip_len) :: lltys
+        | _ ->
+          let llty = lltype_of_data_item item in
+          len + (Int64.to_int (Llvm_target.DataLayout.store_size llty lldly)),
+            lltype_of_data_item item :: lltys)
+      (0, []) items
+  in
+  Llvm.packed_struct_type llctx (Array.of_list (List.rev items))
+
+let llvalue_of_data llmod items =
+  let _, lldata =
+    List.fold_left (fun (len, lldata) item ->
+        let llitem =
+          match item with
+          | Cdefine_label _ | Cdefine_symbol _ | Cglobal_symbol _ -> None
+          | Calign size ->
+            if len mod size = 0 then None
+            else let skip_len = size - len mod size in
+                 Some (Llvm.const_null (Llvm.array_type (Llvm.i8_type llctx) skip_len))
+          | Cint8  c  -> Some (Llvm.const_int (Llvm.i8_type  llctx) c)
+          | Cint16 c  -> Some (Llvm.const_int (Llvm.i16_type llctx) c)
+          | Cint32 c  -> Some (Llvm.const_of_int64 (lltype_of_mcomp Int) (Int64.of_nativeint c) true)
+          | Cint   c  -> Some (Llvm.const_of_int64 (lltype_of_mcomp Int) (Int64.of_nativeint c) true)
+          | Csingle c -> Some (Llvm.const_float_of_string (Llvm.float_type llctx)  c)
+          | Cdouble c -> Some (Llvm.const_float_of_string (Llvm.double_type llctx) c)
+          | Csymbol_address sym ->
+            begin match Llvm.lookup_global sym llmod with
+            | Some gv -> Some gv
+            | None ->
+              match Llvm.lookup_function sym llmod with
+              | Some fn -> Some (Llvm.const_bitcast fn (lltype_of_mcomp Addr))
+              | None    -> assert false
+            end
+          | Clabel_address label ->
+            begin match Llvm.lookup_global (Printf.sprintf "label.%d" label) llmod with
+            | Some gv -> Some gv
+            | None    -> assert false
+            end
+          | Cstring s -> Some (Llvm.const_string llctx s)
+          | Cskip len -> Some (Llvm.const_null (Llvm.array_type (Llvm.i8_type llctx) len))
+        in
+        match llitem with
+        | Some llitem ->
+          let size = Llvm_target.DataLayout.store_size (Llvm.type_of llitem) lldly in
+          let len' = len + (Int64.to_int size) in
+          len', llitem :: lldata
+        | None -> len, lldata)
+      (0, []) items
+  in
+  Llvm.const_packed_struct llctx (Array.of_list (List.rev lldata))
+
 let data llmod decl =
-  fun () -> Llvm.undef (Llvm.i8_type llctx)
+  let llty   = lltype_of_data decl in
+  let lldecl = Llvm.declare_global llty "" llmod in
+  Llvm.set_linkage Llvm.Linkage.Private lldecl;
+  (* pull out interior pointers *)
+  ignore (List.fold_left (fun (externals, idx) item ->
+      let name =
+        match item with
+        | Cdefine_label label -> Some (Printf.sprintf "label.%d" label)
+        | Cdefine_symbol sym  -> Some sym
+        | _ -> None
+      in
+      match name, item with
+      | Some name, _ ->
+        let lllabel = Llvm.declare_global (lltype_of_mcomp Addr) name llmod in
+        if not (List.exists ((=) name) externals) then
+          Llvm.set_linkage Llvm.Linkage.Private lldecl;
+        let llidxs  = [|Llvm.const_int (Llvm.i32_type llctx) 0;
+                        Llvm.const_int (Llvm.i32_type llctx) idx|] in
+        let llptr   = Llvm.const_in_bounds_gep lldecl llidxs in
+        let llptr'  = Llvm.const_bitcast llptr (lltype_of_mcomp Addr) in
+        Llvm.set_initializer llptr' lllabel;
+        externals, idx
+      | None, Cglobal_symbol sym -> sym :: externals, idx
+      | None, _ -> externals, idx + 1)
+    ([], 0) decl);
+  fun () ->
+    Llvm.set_initializer (llvalue_of_data llmod decl) lldecl;
+    lldecl
 
 let transl_unit name =
   let llmod = Llvm.create_module llctx name in

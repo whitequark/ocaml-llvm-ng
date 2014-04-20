@@ -1,3 +1,4 @@
 true: debug
 
+<llvm>: -traverse
 <lib>: include
